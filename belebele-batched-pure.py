@@ -1,9 +1,14 @@
-import transformers
-from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
+import argparse
+import json
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from datasets import load_dataset
 from tqdm import tqdm
-import gc
+
+def write_pretty_json(file_path, data):
+    with open(file_path, "w") as write_file:
+        json.dump(data, write_file, indent=4)
+    print(f"wrote {file_path}")
 
 def parse_choice(response):
     if len(response)==0:
@@ -16,7 +21,6 @@ def parse_choice(response):
         return None
 
 prompt_template={}
-
 prompt_template["deu_Latn"]="""{flores_passage}
 Frage: {question}
 Antwort A: {mc_answer1}
@@ -24,7 +28,6 @@ Antwort B: {mc_answer2}
 Antwort C: {mc_answer3}
 Antwort D: {mc_answer4}
 Richtige Antwort: {correct_answer}"""
-
 prompt_template["eng_Latn"]="""{flores_passage}
 Question: {question}
 Answer A: {mc_answer1}
@@ -32,23 +35,50 @@ Answer B: {mc_answer2}
 Answer C: {mc_answer3}
 Answer D: {mc_answer4}
 Correct answer: {correct_answer}"""
-
 choices=["A","B","C","D"]
 
-model_path="models/ALMA-13B"
-# model_path="models/llama2-70B"
+parser = argparse.ArgumentParser()
+
+parser.add_argument("--model_path", default="models/llama2-7b")
+parser.add_argument("--lang", default="eng_Latn")
+parser.add_argument("--four_bit", action="store_true")
+parser.add_argument("--eight_bit", action="store_true")
+parser.add_argument("--bs", type=int, default=4)
+
+args=parser.parse_args()
+
+model_path=args.model_path
+lang=args.lang
+bs=args.bs
+load_4bit=args.four_bit
+load_8bit=args.eight_bit
 
 tokenizer = AutoTokenizer.from_pretrained(model_path)
 tokenizer.add_special_tokens({"pad_token":"<pad>"})
 
-model = AutoModelForCausalLM.from_pretrained(model_path, 
+nf4_config = BitsAndBytesConfig(
+   load_in_4bit=True,
+   bnb_4bit_quant_type="nf4",
+   bnb_4bit_use_double_quant=True,
+   bnb_4bit_compute_dtype=torch.bfloat16
+)
+
+model = AutoModelForCausalLM.from_pretrained(
+    model_path, 
     device_map="auto", 
-    torch_dtype=torch.bfloat16)
+    torch_dtype=torch.bfloat16,
+    quantization_config=nf4_config if load_4bit else None,
+    load_in_8bit=load_8bit
+    )
 model.resize_token_embeddings(len(tokenizer))
 model.config.pad_token_id = tokenizer.pad_token_id
 
-lang="deu_Latn"
-ds = load_dataset(path="facebook/belebele",name=lang, split="test")
+ds_conf={
+    "path": "facebook/belebele",
+    "name": lang, 
+    "split": "test"
+}
+ds = load_dataset(**ds_conf)
 ds_examples=ds.select(range(0,5))
 ds_prompts=ds.select(range(5,len(ds)))
 
@@ -65,7 +95,19 @@ gen_config = {
     "pad_token_id": tokenizer.eos_token_id,
 }
 
-bs=5
+result={
+    "dataset": ds_conf,
+    "model": model_path,
+    "4bit": load_4bit,
+    "8bit": load_8bit,
+    "total": 0, 
+    "correct": 0,
+    "correct_percent": None,
+    "generation_config": gen_config,
+    "prompt_template": prompt_template[lang],
+    "examples": prompt_examples,
+    "questions": [],
+}
 
 q_correct = q_total = 0
 for start in tqdm(range(0,len(prompts),bs)):
@@ -89,8 +131,21 @@ for start in tqdm(range(0,len(prompts),bs)):
         if choice==int(ds_prompts[sample_no]["correct_answer_num"]):
             q_correct+=1 
         q_total+=1
-
         if choice is None:
             print(f"Could not parse {response_raw[len(prompts[sample_no])+1:]}")
 
+        result["questions"].append({
+            "question": prompts[sample_no],
+            "answer_raw": response_raw[len(prompts[sample_no])+1:],
+            "answer": choice,
+            "correct_answer": int(ds_prompts[sample_no]["correct_answer_num"]),
+            "correct": choice==int(ds_prompts[sample_no]["correct_answer_num"])
+        })
+        result["total"]=q_total
+        result["correct"]=q_correct
+        result["correct_percent"]=q_correct/q_total*100
+
         print(f"{q_total} questions, {q_correct} correct ({round(q_correct/q_total*100,1)}%)")  
+
+        write_pretty_json("results/belebe-{}_{}.json".format(model_path.split("/")[-1],lang), result)
+
