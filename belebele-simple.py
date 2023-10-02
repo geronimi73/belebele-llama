@@ -37,16 +37,6 @@ Correct answer: {correct_answer}"""
 choices=["A","B","C","D"]
 prompt_examples = "\n\n".join([ prompt_template.format(**d,correct_answer=choices[int(d["correct_answer_num"])-1]) for d in ds_examples])
 
-gen_config = {
-    "temperature": 0.7,
-    "top_p": 0.1,
-    "repetition_penalty": 1.18,
-    "top_k": 40,
-    "do_sample": True,
-    "max_new_tokens": 5,
-    "pad_token_id": pipeline.tokenizer.eos_token_id,
-}
-
 # sampling parameters: llama-precise
 gen_config = {
     "temperature": 0.7,
