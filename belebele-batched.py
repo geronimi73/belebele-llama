@@ -39,11 +39,11 @@ choices=["A","B","C","D"]
 
 parser = argparse.ArgumentParser()
 
-parser.add_argument("--model_path", default="models/llama2-7b")
+parser.add_argument("-m", "--model_path", default="models/llama2-7b")
 parser.add_argument("--lang", default="eng_Latn")
 parser.add_argument("--four_bit", action="store_true")
 parser.add_argument("--eight_bit", action="store_true")
-parser.add_argument("--bs", type=int, default=4)
+parser.add_argument("--bs", type=int, default=6)
 
 args=parser.parse_args()
 
@@ -68,7 +68,8 @@ model = AutoModelForCausalLM.from_pretrained(
     device_map="auto", 
     torch_dtype=torch.bfloat16,
     quantization_config=nf4_config if load_4bit else None,
-    load_in_8bit=load_8bit
+    load_in_8bit=load_8bit,
+    trust_remote_code=True
     )
 model.resize_token_embeddings(len(tokenizer))
 model.config.pad_token_id = tokenizer.pad_token_id
@@ -118,15 +119,16 @@ for start in tqdm(range(0,len(prompts),bs)):
     encodings=tokenizer(prompts_batch, return_tensors="pt", padding='longest', truncation=False).to("cuda")
     with torch.no_grad():
         output_ids = model.generate(**encodings, **gen_config)
+
     responses=tokenizer.batch_decode(output_ids, skip_special_tokens=True)
     
     for i,response_raw in enumerate(responses):
         sample_no=i+start
 
-        response=response_raw[len(prompts[sample_no])+1:]
-        response=response.split("\n")[0] if "\n" in response else response
+        response=response_raw[len(prompts[sample_no]):]
+        response=response.split("\n")[0].strip() if "\n" in response else response.strip()
 
-        choice=parse_choice(response.strip())
+        choice=parse_choice(response)
 
         if choice==int(ds_prompts[sample_no]["correct_answer_num"]):
             q_correct+=1 
